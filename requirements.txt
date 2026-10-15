@@ -1,0 +1,14 @@
+# Versiones fijas: un deploy nuevo instala exactamente lo que pasó los tests.
+fastapi==0.143.2
+uvicorn[standard]==0.54.0
+aiogram==3.15.0
+pydantic-settings==2.16.0
+sqlmodel==0.0.33
+SQLAlchemy[asyncio]==2.0.54
+asyncpg==0.32.0
+aiosqlite==0.22.1
+google-genai==2.8.0
+boto3==1.43.114
+tzdata==2026.5
+matplotlib==3.11.2
+alembic==1.20.0
