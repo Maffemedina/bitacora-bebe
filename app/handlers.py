@@ -7,6 +7,7 @@ y ejecutan las acciones contra la base de datos.
 - Recomendaciones del pediatra por foto o audio, que el bot tiene en cuenta.
 """
 
+import logging
 import unicodedata
 from datetime import date, datetime
 from typing import Optional
@@ -30,6 +31,7 @@ from app.storage import media_fullpath, save_media, upload_photo
 from app.utils import ahora, edad_texto, hoy
 
 router = Router()
+log = logging.getLogger("bitacora")
 
 
 # ---------- Helpers ----------
@@ -413,6 +415,7 @@ async def _procesar_texto(
 
     acciones = await agent.planear(texto, hoy().isoformat(), child.name)
     chat_id = message.from_user.id
+    log.info("chat %s (%s) -> %s", chat_id, source, [a.intent for a in acciones])
     activo = child
     hitos_creados = []
     for ext in acciones:

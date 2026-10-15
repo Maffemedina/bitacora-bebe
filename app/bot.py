@@ -1,3 +1,5 @@
+import logging
+
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -7,6 +9,15 @@ from aiogram.types import BotCommand
 from app.acceso import AccesoMiddleware
 from app.config import settings
 from app.handlers import router
+
+# Logs legibles en la terminal y en Railway. Nunca se registra el CONTENIDO de los
+# mensajes (son datos de una familia), solo qué acción se ejecutó.
+logging.basicConfig(
+    level=settings.log_level.upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 bot = Bot(
     token=settings.telegram_bot_token,

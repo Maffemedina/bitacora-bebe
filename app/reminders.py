@@ -67,6 +67,7 @@ async def enviar_pendientes(bot, ahora_: datetime = None, horas: int = None) -> 
             except Exception:  # bloqueó el bot, chat borrado, etc.
                 log.warning("No pude avisar a %s de la cita %s", miembro.chat_id, cita.id)
         avisadas += 1
+        log.info("Recordatorio de la cita %s enviado a la familia %s", cita.id, hijo.family_id)
     return avisadas
 
 

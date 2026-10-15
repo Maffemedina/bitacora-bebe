@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Los familiares que entren con un enlace de /compartir quedan permitidos.
     allowed_user_ids: str = ""
 
+    # Nivel de logs: INFO muestra cada mensaje atendido y qué entendió el agente.
+    log_level: str = "INFO"
+
     # Recordatorios de citas: cuántas horas antes avisar (0 = apagados).
     reminder_hours: int = 24
 
