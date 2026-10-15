@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.bot import bot, dp, registrar_comandos
+from app.reminders import ciclo_recordatorios
 
 
 @asynccontextmanager
@@ -15,7 +16,10 @@ async def lifespan(app: FastAPI):
     # Arranca el POLLING en segundo plano: el bot le pregunta a Telegram por
     # mensajes. Sin webhook ni dominio, hay menos piezas que se puedan romper.
     polling_task = asyncio.create_task(dp.start_polling(bot))
+    # Y el ciclo que revisa citas próximas y avisa a la familia (agente proactivo).
+    reminders_task = asyncio.create_task(ciclo_recordatorios(bot))
     yield
+    reminders_task.cancel()
     polling_task.cancel()
     await bot.session.close()
 

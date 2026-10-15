@@ -22,6 +22,8 @@ Este repo es una plantilla abierta: clónalo, ponle tus llaves y en unos minutos
 | «¿cómo va el crecimiento?» | Tabla + **gráfica** + comentario responsable (siempre remite al pediatra) |
 | «Sara gateó hoy y Mateo entró al jardín el 13 de enero» | **Varias acciones** en un mensaje, cada una a su hijo |
 | «¿es normal que no duerma de corrido?» | Responde con contexto de la edad y lo que dijo **su** pediatra |
+| «prepárame el informe para el pediatra» o `/informe` | Un **PDF** con controles, curva, indicaciones, hitos recientes, próximas citas y espacio para tus preguntas |
+| *(nada, el bot escribe primero)* | **Recordatorio** a toda la familia 24 h antes de cada cita |
 | `/recap` · `/semana` | Todos los hitos con fotos · resumen cálido de la semana |
 | `/compartir` · `/mi_familia` | Enlace de invitación (24 h, un solo uso) · miembros y revocar acceso |
 
@@ -39,6 +41,8 @@ flowchart LR
     H -->|"ejecuta (con permisos)"| C["crud.py"]
     C --> DB[("Postgres<br/>(SQLite en local)")]
     H --> M[("Volumen<br/>fotos y videos")]
+    R["reminders.py<br/>cada 5 min"] -->|"citas próximas"| C
+    R -->|"⏰ escribe primero"| U
 ```
 
 La idea central del diseño: **la IA entiende, el código actúa.**
@@ -60,17 +64,20 @@ termina, como mucho, en una acción mal clasificada que se puede corregir hablan
 app/
 ├── main.py       Arranque en producción: FastAPI (healthcheck) + polling en segundo plano
 ├── bot.py        Bot y Dispatcher de aiogram, menú de comandos
+├── acceso.py     Lista de acceso: quién puede hablarle al bot
 ├── handlers.py   Entradas (texto, voz, foto, video, comandos) y ejecución de acciones
 ├── agent.py      Prompts y llamadas a Gemini; devuelve objetos Pydantic, nunca texto suelto
 ├── crud.py       Acceso a datos + autorización por familia (resolver_hijo)
 ├── models.py     Tablas (SQLModel): Family, FamilyMember, Invite, Child, Milestone, ...
 ├── roles.py      Política de roles: editor y admin
+├── reminders.py  Recordatorios proactivos de citas a toda la familia
+├── informe.py    Informe PDF para el pediatra (sin IA, con tests)
 ├── summary.py    Resumen semanal determinista (sin IA, con tests)
 ├── charts.py     Curva de crecimiento en PNG (matplotlib)
 ├── storage.py    Fotos y videos en volumen persistente o S3
 └── utils.py      "Hoy" en la zona horaria de la familia, edad legible
 migrations/       Alembic: la única fuente del esquema
-tests/            62 tests, sin red ni llaves reales
+tests/            79 tests, sin red ni llaves reales
 docs/             Diseño de la bitácora familiar compartida
 ```
 
@@ -105,7 +112,7 @@ cd bitacora-bebe
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 cp .env.example .env      # pon TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME y GEMINI_API_KEY
-pytest -q                 # 62 tests, sin red
+pytest -q                 # 79 tests, sin red
 python run_local.py       # crea la base (SQLite) y arranca el bot
 ```
 
@@ -127,12 +134,31 @@ fecha de nacimiento, y listo.
    | `GEMINI_API_KEY` | tu llave de Gemini |
    | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
    | `TIMEZONE` | tu zona, ej. `America/Bogota` |
+   | `ALLOWED_USER_IDS` | tu ID de Telegram (ver abajo); varios separados por coma |
 
 5. *(Opcional, para que las fotos duren para siempre)* Clic derecho en el servicio →
    **Attach Volume**, móntalo en `/data` y agrega la variable `MEDIA_DIR=/data`.
 6. Railway vuelve a desplegar solo. Cuando el estado esté en verde, escríbele a tu bot.
 
 Cada `git push` a tu fork despliega la nueva versión automáticamente.
+
+### Cierra tu bot (recomendado)
+
+Cualquiera que encuentre el username de tu bot puede escribirle, y cada mensaje gasta
+**tu** cuota de Gemini. Para que solo lo use tu familia:
+
+1. Escríbele `/mi_id` a tu bot y copia el número.
+2. Ponlo en la variable `ALLOWED_USER_IDS` (varios IDs separados por coma).
+3. Al resto de la familia invítalo con `/compartir`: quien entra con ese enlace queda
+   permitido, y si un admin le revoca el acceso, el bot deja de atenderle.
+
+A cualquier otra persona el bot le responde que la bitácora es privada.
+
+### Recordatorios
+
+El bot revisa cada 5 minutos las citas próximas y avisa a todos los miembros de la
+familia `REMINDER_HOURS` horas antes (24 por defecto; `0` los apaga). Si corriges la
+hora de una cita, vuelve a avisar.
 
 > **Importante:** Telegram entrega los mensajes a **una sola** instancia. Si el bot corre
 > en Railway, no lo corras al mismo tiempo en tu computador con el mismo token (verás
@@ -153,9 +179,8 @@ Agregar una capacidad nueva son tres cambios:
    ```
    y escribe el `upgrade()` / `downgrade()` en `migrations/versions/`.
 
-Ideas para empezar: recordatorios antes de cada cita (los modelos ya tienen el campo
-`remind`), registro de vacunas, tomas y pañales, un recap en video del año, o cambiar
-Gemini por otro modelo (todo el acceso a la IA vive en `agent.py`).
+Ideas para empezar: registro de vacunas, tomas y pañales, un recap en video del año, o
+cambiar Gemini por otro modelo (todo el acceso a la IA vive en `agent.py`).
 
 ## Decisiones técnicas (y por qué)
 
@@ -173,8 +198,14 @@ Gemini por otro modelo (todo el acceso a la IA vive en `agent.py`).
 - **Autorización por familia en un solo lugar** (`resolver_hijo`). Toda lectura,
   escritura y botón vuelve a verificar permisos; un botón viejo no da acceso a alguien
   que ya fue revocado. Detalle en [docs/familia-compartida.md](docs/familia-compartida.md).
-- **Resumen semanal sin IA.** Lo que se puede hacer con código determinista se hace con
-  código: es gratis, instantáneo y testeable.
+- **Resumen semanal e informe PDF sin IA.** Lo que se puede hacer con código
+  determinista se hace con código: es gratis, instantáneo y testeable. Y un documento
+  que va a leer un médico no debe tener frases inventadas por un modelo.
+- **Lista de acceso como middleware.** Se revisa una sola vez, antes de cualquier
+  handler, para mensajes y botones. Ningún handler nuevo puede "olvidar" el chequeo.
+- **El agente escribe primero.** Los recordatorios corren en el mismo proceso que el
+  polling (sin cron ni colas extra); cada cita se marca como avisada antes de enviar,
+  para que un fallo de Telegram nunca termine en avisos repetidos.
 
 ## Licencia
 

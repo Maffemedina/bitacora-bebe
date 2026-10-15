@@ -14,6 +14,11 @@ def hoy() -> date:
     return datetime.now(ZONA).date()
 
 
+def ahora() -> datetime:
+    """Fecha y hora local de la familia, sin zona (así se guardan las citas)."""
+    return datetime.now(ZONA).replace(tzinfo=None)
+
+
 def edad_texto(nacimiento: date, ref: Optional[date] = None) -> str:
     """Edad legible: '3 meses', '14 meses', '2 años y 1 mes'."""
     ref = ref or hoy()

@@ -124,6 +124,8 @@ async def planear(mensaje: str, hoy_iso: str, baby_name: str) -> list[Extraccion
         "o si está bien de peso/talla.\n"
         "- resumen_semanal: pide el resumen de la semana ('resumen semanal', '¿qué pasó "
         "esta semana?', 'la semana de X', 'cómo estuvo la semana').\n"
+        "- informe_pediatra: pide el informe/resumen/PDF para llevar al pediatra o a "
+        "la consulta ('prepárame el informe para el pediatra', 'pásame el PDF').\n"
         "- fallecimiento: la persona comunica que un hijo/bebé falleció, murió o se "
         "perdió. Extrae 'nombre_hijo' si lo menciona y 'fecha' YYYY-MM-DD. MUY "
         "IMPORTANTE: cualquier mensaje sobre la muerte o pérdida de un hijo va SIEMPRE "

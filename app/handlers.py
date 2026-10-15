@@ -23,11 +23,11 @@ from aiogram.types import (
     Message,
 )
 
-from app import agent, crud, roles
+from app import agent, crud, reminders, roles
 from app.config import settings
 from app.states import ChildSetup, ControlMedidas
 from app.storage import media_fullpath, save_media, upload_photo
-from app.utils import edad_texto, hoy
+from app.utils import ahora, edad_texto, hoy
 
 router = Router()
 
@@ -73,6 +73,21 @@ def _elegir_registro(registros, referencia, get_text):
     if coincidencias:
         return max(coincidencias, key=lambda r: r.created_at)
     return None
+
+
+async def _aviso_recordatorio(cita) -> str:
+    """Decide si la cita tendrá recordatorio y devuelve la línea para contarlo.
+
+    Si la cita ya está dentro de la ventana de aviso (ej. es en 3 horas), no tiene
+    sentido "recordarla" 5 minutos después de agendarla: se marca como avisada.
+    """
+    horas = settings.reminder_hours
+    if horas <= 0:
+        return ""
+    if reminders.queda_dentro_de_la_ventana(cita.scheduled_at, ahora(), horas):
+        await crud.marcar_recordada(cita.id)
+        return ""
+    return f"\n⏰ Les aviso a todos en la familia {horas} h antes."
 
 
 def _fmt_medida(v, unidad: str) -> str:
@@ -163,6 +178,25 @@ async def _enviar_recap(target: Message, child, memoria: bool = False) -> None:
                 await target.answer(linea)
         except Exception:
             await target.answer(linea)  # si el archivo no está, al menos el texto
+
+
+async def _enviar_informe(target: Message, child) -> None:
+    from app.informe import generar_informe_pdf
+
+    pdf = generar_informe_pdf(
+        child,
+        edad_texto(child.birthdate) if child.birthdate else None,
+        await crud.list_controls(child.id),
+        await crud.list_advice(child.id),
+        await crud.list_milestones(child.id),
+        await crud.list_upcoming_appointments(child.id),
+        hoy(),
+    )
+    nombre = "".join(c for c in child.name if c.isalnum()) or "bebe"
+    await target.answer_document(
+        BufferedInputFile(pdf, filename=f"informe-{nombre}-{hoy():%Y-%m-%d}.pdf"),
+        caption=f"🩺 Informe de <b>{child.name}</b> para llevar a la consulta.",
+    )
 
 
 async def _enviar_resumen_semanal(target: Message, child) -> None:
@@ -443,8 +477,9 @@ async def _ejecutar_accion(
         titulo = ext.titulo_cita or "Cita"
         appt = await crud.add_appointment(chat_id, child.id, titulo, dt, ext.lugar_cita)
         lugar = f"\n📍 {appt.location}" if appt.location else ""
+        aviso = await _aviso_recordatorio(appt)
         await message.answer(
-            f"📅 Cita agendada: <b>{titulo}</b>\n🗓 {dt:%d/%m/%Y} a las {dt:%H:%M}{lugar}"
+            f"📅 Cita agendada: <b>{titulo}</b>\n🗓 {dt:%d/%m/%Y} a las {dt:%H:%M}{lugar}{aviso}"
         )
 
     elif ext.intent == "listar_citas":
@@ -553,10 +588,11 @@ async def _ejecutar_accion(
             )
             return
         antes = c.scheduled_at
-        await crud.update_appointment_datetime(c.id, nueva_dt)
+        c = await crud.update_appointment_datetime(c.id, nueva_dt)
+        aviso = await _aviso_recordatorio(c)
         await message.answer(
             f"✏️ Corregido: <b>{c.title}</b>\n"
-            f"{antes:%d/%m/%Y %H:%M} → <b>{nueva_dt:%d/%m/%Y %H:%M}</b> ✅"
+            f"{antes:%d/%m/%Y %H:%M} → <b>{nueva_dt:%d/%m/%Y %H:%M}</b> ✅{aviso}"
         )
 
     elif ext.intent == "borrar_hito":
@@ -622,6 +658,9 @@ async def _ejecutar_accion(
 
     elif ext.intent == "resumen_semanal":
         await _enviar_resumen_semanal(message, child)
+
+    elif ext.intent == "informe_pediatra":
+        await _enviar_informe(message, child)
 
     elif ext.intent == "pregunta_bebe":
         contexto = f"El bebé se llama {child.name}"
@@ -809,6 +848,13 @@ async def cmd_semana(message: Message, state: FSMContext) -> None:
         await _enviar_resumen_semanal(message, child)
 
 
+@router.message(Command("informe"))
+async def cmd_informe(message: Message, state: FSMContext) -> None:
+    child = await _resolver_activo(message, state)
+    if child:
+        await _enviar_informe(message, child)
+
+
 @router.message(Command("compartir"))
 async def cmd_compartir(message: Message, state: FSMContext) -> None:
     child = await _resolver_activo(message, state)
@@ -863,6 +909,14 @@ async def cmd_mi_familia(message: Message, state: FSMContext) -> None:
             kb = InlineKeyboardMarkup(inline_keyboard=botones)
             lineas.append("\n<i>Como admin, puedes revocar accesos abajo.</i>")
     await message.answer("\n".join(lineas), reply_markup=kb)
+
+
+@router.message(Command("mi_id"))
+async def cmd_mi_id(message: Message) -> None:
+    await message.answer(
+        f"Tu ID de Telegram es <code>{message.from_user.id}</code>.\n"
+        "Si administras el bot, ponlo en la variable <b>ALLOWED_USER_IDS</b>."
+    )
 
 
 @router.message(Command("ping"))

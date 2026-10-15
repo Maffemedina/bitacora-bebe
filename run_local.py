@@ -20,12 +20,17 @@ async def main() -> None:
     # Importar aquí (con el loop ya en marcha) evita el error de aiogram+uvloop en
     # Python 3.9, que al crear el Dispatcher al importar busca un event loop inexistente.
     from app.bot import bot, dp, registrar_comandos
+    from app.reminders import ciclo_recordatorios
 
     await bot.delete_webhook(drop_pending_updates=True)
     await registrar_comandos()
     print("🍼 Bitácora Bebé corriendo en modo polling.")
     print("   Abre tu bot en Telegram y escríbele /start")
-    await dp.start_polling(bot)
+    recordatorios = asyncio.create_task(ciclo_recordatorios(bot))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        recordatorios.cancel()
 
 
 if __name__ == "__main__":

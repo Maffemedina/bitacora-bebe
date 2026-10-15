@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     telegram_bot_token: str
     telegram_bot_username: str = ""  # para los deep links de /compartir (sin @)
 
+    # Quién puede usar el bot: IDs numéricos de Telegram separados por coma.
+    # Vacío = abierto a cualquiera (cada mensaje gasta TU cuota de Gemini).
+    # Los familiares que entren con un enlace de /compartir quedan permitidos.
+    allowed_user_ids: str = ""
+
+    # Recordatorios de citas: cuántas horas antes avisar (0 = apagados).
+    reminder_hours: int = 24
+
     # Gemini: el cerebro del agente
     gemini_api_key: str = ""
     # Modelo FIJO (no un alias): 'gemini-flash-latest' se mueve solo y puede caer

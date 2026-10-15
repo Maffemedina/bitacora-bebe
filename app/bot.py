@@ -4,6 +4,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
+from app.acceso import AccesoMiddleware
 from app.config import settings
 from app.handlers import router
 
@@ -17,6 +18,11 @@ bot = Bot(
 dp = Dispatcher(storage=MemoryStorage())
 dp.include_router(router)
 
+# Lista de acceso: corre ANTES de cualquier handler (mensajes y botones).
+_acceso = AccesoMiddleware()
+dp.message.outer_middleware(_acceso)
+dp.callback_query.outer_middleware(_acceso)
+
 # El menú "/" que ve la persona en Telegram. Se registra al arrancar, así no hay
 # que configurarlo a mano en @BotFather.
 COMANDOS = [
@@ -25,6 +31,8 @@ COMANDOS = [
     BotCommand(command="semana", description="Resumen de la semana"),
     BotCommand(command="compartir", description="Invitar a alguien de la familia"),
     BotCommand(command="mi_familia", description="Miembros y permisos"),
+    BotCommand(command="informe", description="PDF para llevar al pediatra"),
+    BotCommand(command="mi_id", description="Tu ID de Telegram"),
 ]
 
 

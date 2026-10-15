@@ -471,6 +471,30 @@ async def list_upcoming_appointments(child_id: int) -> Sequence[Appointment]:
         return result.scalars().all()
 
 
+async def citas_por_recordar(desde: datetime, hasta: datetime) -> Sequence[Appointment]:
+    """Citas con recordatorio pendiente que ocurren entre 'desde' y 'hasta'."""
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Appointment)
+            .where(Appointment.remind.is_(True))
+            .where(Appointment.reminded.is_(False))
+            .where(Appointment.scheduled_at > desde)
+            .where(Appointment.scheduled_at <= hasta)
+            .order_by(Appointment.scheduled_at)
+        )
+        return result.scalars().all()
+
+
+async def marcar_recordada(appointment_id: int) -> None:
+    async with SessionLocal() as session:
+        await session.execute(
+            update(Appointment)
+            .where(Appointment.id == appointment_id)
+            .values(reminded=True)
+        )
+        await session.commit()
+
+
 async def list_appointments(child_id: int) -> Sequence[Appointment]:
     """Todas las citas del hijo (incluidas pasadas), para poder corregirlas."""
     async with SessionLocal() as session:
@@ -490,6 +514,7 @@ async def update_appointment_datetime(
         if not c:
             return None
         c.scheduled_at = new_dt
+        c.reminded = False  # cambió la hora: hay que volver a avisar
         session.add(c)
         await session.commit()
         await session.refresh(c)
