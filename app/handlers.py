@@ -27,7 +27,7 @@ from aiogram.types import (
 from app import agent, crud, reminders, roles
 from app.config import settings
 from app.states import ChildSetup, ControlMedidas
-from app.storage import media_fullpath, save_media, upload_photo
+from app.storage import delete_media, media_fullpath, save_media, upload_photo
 from app.utils import ahora, edad_texto, hoy
 
 router = Router()
@@ -75,6 +75,114 @@ def _elegir_registro(registros, referencia, get_text):
     if coincidencias:
         return max(coincidencias, key=lambda r: r.created_at)
     return None
+
+
+def _control_mas_cercano(controles, fecha: date):
+    """El control con medidas más cercano a una fecha (ante un empate, el anterior)."""
+    con_medidas = [
+        c for c in controles
+        if c.peso_kg is not None or c.talla_cm is not None or c.perimetro_cm is not None
+    ]
+    return min(
+        con_medidas,
+        key=lambda c: (abs((c.fecha - fecha).days), c.fecha > fecha),
+        default=None,
+    )
+
+
+def _fmt_detalle_hito(hito, nacimiento: Optional[date], control) -> str:
+    """Cuándo pasó, qué edad tenía y qué medidas hay, sin dar por medido lo que no se midió."""
+    lineas = [f"🗓️ <i>{hito.description}</i>: <b>{hito.happened_on:%d/%m/%Y}</b>"]
+    if nacimiento and hito.happened_on >= nacimiento:
+        lineas.append(f"👶 Tenía <b>{edad_texto(nacimiento, hito.happened_on)}</b>.")
+    elif not nacimiento:
+        lineas.append("👶 No tengo su fecha de nacimiento para decirte qué edad tenía.")
+    if control is None:
+        lineas.append("📏 No tengo controles de peso o talla para comparar.")
+    else:
+        medidas = (
+            f"peso {_fmt_medida(control.peso_kg, 'kg')}, "
+            f"talla {_fmt_medida(control.talla_cm, 'cm')}, "
+            f"PC {_fmt_medida(control.perimetro_cm, 'cm')}"
+        )
+        dias = (control.fecha - hito.happened_on).days
+        if dias == 0:
+            lineas.append(f"📏 Ese día le midieron: {medidas}.")
+        else:
+            cuando = f"{abs(dias)} día{'s' if abs(dias) != 1 else ''} {'después' if dias > 0 else 'antes'}"
+            lineas.append(
+                f"📏 El control más cercano fue el {control.fecha:%d/%m/%Y} ({cuando}): {medidas}."
+            )
+    return "\n".join(lineas)
+
+
+# Límites de lo posible en un niño: lo que queda fuera es un error de lectura.
+RANGOS_MEDIDAS = {"peso": (0.3, 50), "talla": (20, 150), "perimetro": (15, 70)}
+
+
+def _validar_cartilla(filas, nacimiento: Optional[date], hoy_: date, controles) -> tuple:
+    """Separa lo leído de una cartilla en (nuevas, descartadas, repetidas).
+
+    Solo pasa lo que tiene fecha válida y medidas posibles; las fechas que ya tienen
+    control no se tocan, para no reemplazar lo que la familia ya registró.
+    """
+    ya_medidas = {
+        c.fecha for c in controles
+        if c.peso_kg is not None or c.talla_cm is not None or c.perimetro_cm is not None
+    }
+    nuevas, descartadas, repetidas = [], 0, 0
+    for fila in filas:
+        fecha = _parse_date(fila.fecha)
+        medidas = {k: getattr(fila, k) for k in RANGOS_MEDIDAS}
+        if (
+            fecha is None
+            or fecha > hoy_
+            or (nacimiento and fecha < nacimiento)
+            or all(v is None for v in medidas.values())
+            or any(
+                v is not None and not RANGOS_MEDIDAS[k][0] <= v <= RANGOS_MEDIDAS[k][1]
+                for k, v in medidas.items()
+            )
+        ):
+            descartadas += 1
+        elif fecha in ya_medidas:
+            repetidas += 1
+        else:
+            ya_medidas.add(fecha)
+            nuevas.append({"fecha": fecha.isoformat(), **medidas})
+    nuevas.sort(key=lambda f: f["fecha"])
+    return nuevas, descartadas, repetidas
+
+
+# Descripciones que el bot puso solo para guardar un archivo: no son un hito de verdad.
+HITOS_DE_RELLENO = {"un video para recordar", "un momento para recordar"}
+
+
+def _es_relleno(hito) -> bool:
+    return hito.description.strip().lower() in HITOS_DE_RELLENO
+
+
+def _tipo_media(ref: str) -> str:
+    return "video" if ref.startswith("tgv:") or ref.endswith(".mp4") else "foto"
+
+
+def _elegir_origen_media(hitos, tipo: Optional[str]):
+    """De dónde sale el archivo: primero los de relleno (son archivos sin hito) y luego
+    el más reciente, del tipo pedido si lo dijeron."""
+    tipo = (tipo or "").lower()
+    candidatos = [
+        h for h in hitos
+        if h.photo_ref and (tipo not in ("video", "foto") or _tipo_media(h.photo_ref) == tipo)
+    ]
+    return max(candidatos, key=lambda h: (_es_relleno(h), h.created_at), default=None)
+
+
+def _sin_nombre(referencia: Optional[str], nombre: str) -> str:
+    """Quita el nombre del bebé de la referencia: no sirve para distinguir hitos."""
+    palabras = _sin_acentos(nombre.lower()).split()
+    return " ".join(
+        w for w in (referencia or "").split() if _sin_acentos(w.lower()) not in palabras
+    )
 
 
 async def _aviso_recordatorio(cita) -> str:
@@ -163,23 +271,25 @@ async def _enviar_recap(target: Message, child, memoria: bool = False) -> None:
         return
     await target.answer(f"{encabezado} — {len(hitos)} momento(s):")
     for h in hitos:
-        linea = f"• {h.happened_on:%d/%m/%Y} — {h.description}"
-        ref = h.photo_ref or ""
-        try:
-            if ref.startswith("vol:"):
-                archivo = FSInputFile(media_fullpath(ref))
-                if ref.lower().endswith((".mp4", ".mov", ".webm")):
-                    await target.answer_video(archivo, caption=linea)
-                else:
-                    await target.answer_photo(archivo, caption=linea)
-            elif ref.startswith("tgv:"):
-                await target.answer_video(ref[4:], caption=linea)
-            elif ref.startswith("tg:"):
-                await target.answer_photo(ref[3:], caption=linea)
+        await _enviar_con_media(target, h.photo_ref or "", f"• {h.happened_on:%d/%m/%Y} — {h.description}")
+
+
+async def _enviar_con_media(target: Message, ref: str, linea: str) -> None:
+    try:
+        if ref.startswith("vol:"):
+            archivo = FSInputFile(media_fullpath(ref))
+            if ref.lower().endswith((".mp4", ".mov", ".webm")):
+                await target.answer_video(archivo, caption=linea)
             else:
-                await target.answer(linea)
-        except Exception:
-            await target.answer(linea)  # si el archivo no está, al menos el texto
+                await target.answer_photo(archivo, caption=linea)
+        elif ref.startswith("tgv:"):
+            await target.answer_video(ref[4:], caption=linea)
+        elif ref.startswith("tg:"):
+            await target.answer_photo(ref[3:], caption=linea)
+        else:
+            await target.answer(linea)
+    except Exception:
+        await target.answer(linea)  # si el archivo no está, al menos el texto
 
 
 async def _enviar_informe(target: Message, child) -> None:
@@ -377,6 +487,121 @@ async def cb_delhito(cb: CallbackQuery) -> None:
     await cb.message.answer("🗑️ Hito borrado." if ok else "Ese hito ya no existe.")
 
 
+def _kb_mover_media(origen_id: int, destino_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Sí, pasarlo", callback_data=f"movmedia:{origen_id}:{destino_id}"
+                ),
+                InlineKeyboardButton(text="Cancelar", callback_data="movmedia:no"),
+            ]
+        ]
+    )
+
+
+@router.callback_query(F.data.startswith("movmedia:"))
+async def cb_movmedia(cb: CallbackQuery) -> None:
+    await cb.answer()
+    if cb.data == "movmedia:no":
+        await cb.message.answer("Listo, lo dejé como estaba 🙂")
+        return
+    _, origen_id, destino_id = cb.data.split(":")
+    origen = await crud.get_milestone(int(origen_id))
+    destino = await crud.get_milestone(int(destino_id))
+    if (
+        origen is None
+        or destino is None
+        or await crud.resolver_hijo(cb.from_user.id, origen.child_id) is None
+        or await crud.resolver_hijo(cb.from_user.id, destino.child_id) is None
+    ):
+        await cb.message.answer("No puedes mover este recuerdo 🚫")
+        return
+    await _mover_media(cb.message, origen, destino)
+
+
+def _kb_media_sin_hito(hitos) -> InlineKeyboardMarkup:
+    """Los hitos recientes que aún no tienen foto/video, más las otras salidas."""
+    sin_media = sorted(
+        (h for h in hitos if not h.photo_ref), key=lambda h: h.created_at, reverse=True
+    )[:3]
+    filas = [
+        [
+            InlineKeyboardButton(
+                text=f"{h.description[:30]} ({h.happened_on:%d/%m/%Y})",
+                callback_data=f"mediahito:{h.id}",
+            )
+        ]
+        for h in sin_media
+    ]
+    filas.append(
+        [
+            InlineKeyboardButton(text="🆕 Es un momento nuevo", callback_data="medianuevo"),
+            InlineKeyboardButton(text="Descartar", callback_data="mediadescartar"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=filas)
+
+
+@router.callback_query(F.data.startswith("mediahito:"))
+async def cb_mediahito(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    ref = (await state.get_data()).get("media_sin_hito")
+    if not ref:
+        await cb.message.answer("Ya no tengo ese video pendiente 🙈, ¿me lo reenvías?")
+        return
+    m = await crud.get_milestone(int(cb.data.split(":", 1)[1]))
+    if m is None or await crud.resolver_hijo(cb.from_user.id, m.child_id) is None:
+        await cb.message.answer("No puedes usar este hito 🚫")
+        return
+    await _guardar_media_pendiente(cb.message, state, m, ref)
+
+
+@router.callback_query(F.data == "medianuevo")
+async def cb_medianuevo(cb: CallbackQuery) -> None:
+    await cb.answer()
+    await cb.message.answer(
+        "Cuéntame qué pasó y cuándo (ej. <i>dio sus primeros pasos el 5 de julio</i>) "
+        "y lo guardo con el video 🙂"
+    )
+
+
+@router.callback_query(F.data == "mediadescartar")
+async def cb_mediadescartar(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    await _descartar_media_pendiente(cb.message, state)
+
+
+@router.callback_query(F.data.startswith("cartilla:"))
+async def cb_cartilla(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer()
+    pendiente = (await state.get_data()).get("cartilla")
+    await state.update_data(cartilla=None)  # primero: un doble toque no guarda dos veces
+    if cb.data == "cartilla:no":
+        await cb.message.answer(
+            "Listo, no guardé nada 🙂 Puedes enviarme una foto más clara o decirme una "
+            "medida: <i>«pesó 8 kilos el 3 de mayo»</i>."
+        )
+        return
+    if not pendiente:
+        await cb.message.answer("Ya no tengo esa lectura 🙈, ¿me envías la foto otra vez?")
+        return
+    child = await crud.resolver_hijo(cb.from_user.id, pendiente["child_id"])
+    if child is None:
+        await cb.message.answer("No tienes acceso a este bebé 🚫")
+        return
+    for f in pendiente["filas"]:
+        await crud.add_control(
+            cb.from_user.id, child.id, date.fromisoformat(f["fecha"]),
+            f["peso"], f["talla"], f["perimetro"],
+        )
+    n = len(pendiente["filas"])
+    await cb.message.answer(
+        f"📏 Guardé {n} control{'es' if n != 1 else ''} de <b>{child.name}</b> ✅\n"
+        "Pregúntame <i>«¿cómo va el crecimiento?»</i> para ver la curva."
+    )
+
+
 @router.callback_query(F.data.startswith("revoke:"))
 async def cb_revocar(cb: CallbackQuery) -> None:
     await cb.answer()
@@ -413,7 +638,21 @@ async def _procesar_texto(
         await message.answer("Listo, lo dejé guardado sin foto 🙂")
         return
 
-    acciones = await agent.planear(texto, hoy().isoformat(), child.name)
+    contexto = ""
+    if data.get("media_sin_hito"):
+        if texto.strip().lower() in ("omitir", "ahora no", "no", "no gracias", "descartar"):
+            await _descartar_media_pendiente(message, state)
+            return
+        hitos = await crud.list_milestones(child.id)
+        lista = "; ".join(h.description for h in hitos if not _es_relleno(h))
+        contexto = (
+            "\nCONTEXTO: la persona acaba de enviar un video y le preguntamos a qué hito va. "
+            f"Sus hitos son: {lista or 'ninguno'}. Si responde con uno de ellos, usa "
+            "adjuntar_media con 'referencia' igual a esa descripción. Si es un momento que "
+            "no está en la lista, usa guardar_hito."
+        )
+
+    acciones = await agent.planear(texto, hoy().isoformat(), child.name, contexto)
     chat_id = message.from_user.id
     log.info("chat %s (%s) -> %s", chat_id, source, [a.intent for a in acciones])
     activo = child
@@ -465,9 +704,20 @@ async def _ejecutar_accion(
     elif ext.intent == "guardar_hito":
         fecha = _parse_date(ext.fecha) or hoy()
         desc = ext.descripcion or texto
-        m = await crud.add_milestone(chat_id, child.id, desc, fecha)
+        media_ref = (await state.get_data()).get("media_sin_hito")
+        m = await crud.add_milestone(chat_id, child.id, desc, fecha, media_ref)
+        if media_ref:
+            await state.update_data(media_sin_hito=None)
+            await message.answer(f"🎥 Hito con video guardado ({fecha:%d/%m/%Y}):\n<i>{desc}</i>")
+            return None
         await message.answer(f"📌 Hito guardado ({fecha:%d/%m/%Y}):\n<i>{desc}</i>")
         return m.id
+
+    elif ext.intent == "adjuntar_media":
+        await _pasar_media_a_hito(message, ext, child, state)
+
+    elif ext.intent == "consultar_hito":
+        await _responder_hito(message, ext, child, texto)
 
     elif ext.intent == "listar_hitos":
         await _enviar_recap(message, child)
@@ -724,9 +974,172 @@ async def _adjuntar_media(message: Message, child, referencia, media_ref: str) -
         )
         return
     await crud.update_milestone_media(h.id, media_ref)
-    tipo = "video" if media_ref.startswith("tgv:") else "foto"
+    tipo = _tipo_media(media_ref)
     await message.answer(
-        f"📎 Le adjunté la {tipo} al hito:\n• {h.happened_on:%d/%m/%Y} — <i>{h.description}</i> ✅"
+        f"📎 Le adjunté {'el' if tipo == 'video' else 'la'} {tipo} al hito:\n"
+        f"• {h.happened_on:%d/%m/%Y} — <i>{h.description}</i> ✅"
+    )
+
+
+async def _responder_hito(message: Message, ext, child, texto: str) -> None:
+    """«¿Cuándo caminó?»: fecha, edad que tenía y las medidas de ese momento."""
+    hitos = [h for h in await crud.list_milestones(child.id) if not _es_relleno(h)]
+    h = None
+    fallo_ia = False
+    if hitos:
+        try:
+            elegido = await agent.elegir_hito(
+                ext.referencia or texto, [(x.id, x.description) for x in hitos]
+            )
+            h = next((x for x in hitos if x.id == elegido), None)
+        except Exception:
+            fallo_ia = True
+        referencia = _sin_nombre(ext.referencia, child.name)
+        if h is None and referencia:  # sin respuesta de la IA, por coincidencia de texto
+            h = _elegir_registro(hitos, referencia, lambda r: r.description)
+    if h is None and fallo_ia:
+        await message.answer(
+            "⏳ No pude revisar sus hitos ahora mismo (límite de Gemini). "
+            "Pregúntame otra vez en un momento 🙂"
+        )
+        return
+    if h is None:
+        await message.answer(
+            f"No tengo eso registrado de <b>{child.name}</b> 🙈. Si ya pasó, cuéntame "
+            "cuándo (ej. <i>caminó el 3 de mayo</i>) y lo guardo."
+        )
+        return
+    controles = await crud.list_controls(child.id)
+    detalle = _fmt_detalle_hito(h, child.birthdate, _control_mas_cercano(controles, h.happened_on))
+    await _enviar_con_media(message, h.photo_ref or "", detalle)
+
+
+async def _proponer_cartilla(message: Message, state: FSMContext, child, filas) -> None:
+    """Muestra lo leído de una cartilla y espera confirmación antes de guardar."""
+    nuevas, descartadas, repetidas = _validar_cartilla(
+        filas, child.birthdate, hoy(), await crud.list_controls(child.id)
+    )
+    avisos = []
+    if repetidas:
+        avisos.append(f"Dejé {repetidas} que ya tenías en esa fecha, sin cambiarlos.")
+    if descartadas:
+        avisos.append(f"No tomé {descartadas} que no pude leer bien o no tienen sentido.")
+    if not nuevas:
+        avisos.insert(0, "📋 Vi la cartilla, pero no hay medidas nuevas para guardar.")
+        await message.answer("\n".join(avisos))
+        return
+    await state.update_data(cartilla={"child_id": child.id, "filas": nuevas})
+    lineas = [
+        f"• {date.fromisoformat(f['fecha']):%d/%m/%Y}: peso {_fmt_medida(f['peso'], 'kg')}, "
+        f"talla {_fmt_medida(f['talla'], 'cm')}, PC {_fmt_medida(f['perimetro'], 'cm')}"
+        for f in nuevas
+    ]
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Sí, guardar", callback_data="cartilla:si"),
+                InlineKeyboardButton(text="Cancelar", callback_data="cartilla:no"),
+            ]
+        ]
+    )
+    await message.answer(
+        f"📋 Esto leí en la cartilla de <b>{child.name}</b>. Revísalo con la foto, porque "
+        "puedo equivocarme con la letra:\n" + "\n".join(lineas + avisos) + "\n\n¿Lo guardo?",
+        reply_markup=kb,
+    )
+
+
+async def _mover_media(message: Message, origen, destino) -> None:
+    """Pasa el archivo de un hito a otro; si el origen era de relleno, lo borra."""
+    relleno = _es_relleno(origen)
+    tipo = _tipo_media(origen.photo_ref or "")
+    movido = await crud.move_milestone_media(origen.id, destino.id, borrar_origen=relleno)
+    if movido is None:
+        await message.answer("No pude pasarlo 🙈: ese hito ya tiene un archivo o ya no existe.")
+        return
+    nota = f"\nBorré «{origen.description}», que ya no hace falta." if relleno else ""
+    await message.answer(
+        f"📎 Listo, pasé {'el' if tipo == 'video' else 'la'} {tipo} al hito:\n"
+        f"• {destino.happened_on:%d/%m/%Y} — <i>{destino.description}</i> ✅{nota}"
+    )
+
+
+async def _guardar_media_pendiente(message: Message, state: FSMContext, hito, ref: str) -> None:
+    """Le pone a un hito el video que estaba esperando saber a dónde ir."""
+    if hito.photo_ref:
+        await message.answer(
+            f"«{hito.description}» ya tiene un archivo 🙈. Elige otro hito o dime cuál."
+        )
+        return
+    await crud.update_milestone_media(hito.id, ref)
+    await state.update_data(media_sin_hito=None)
+    await message.answer(
+        f"📎 ¡Listo! Guardé el video en el hito:\n"
+        f"• {hito.happened_on:%d/%m/%Y} — <i>{hito.description}</i> ✅"
+    )
+
+
+async def _descartar_media_pendiente(message: Message, state: FSMContext) -> None:
+    ref = (await state.get_data()).get("media_sin_hito")
+    if ref:
+        delete_media(ref)
+    await state.update_data(media_sin_hito=None)
+    await message.answer("Listo, no guardé ese video 🙂")
+
+
+async def _pasar_media_a_hito(message: Message, ext, child, state: FSMContext) -> None:
+    """«El video que te envié pásalo al hito de...»: lleva un archivo ya enviado a un hito."""
+    pendiente = (await state.get_data()).get("media_sin_hito")
+    hitos = await crud.list_milestones(child.id)
+    origen = None if pendiente else _elegir_origen_media(hitos, ext.tipo_media)
+    if not pendiente and origen is None:
+        await message.answer(
+            f"No encontré ningún archivo guardado de <b>{child.name}</b> 🙈. Envíamelo otra vez."
+        )
+        return
+
+    referencia = _sin_nombre(ext.referencia, child.name)
+    destino = _elegir_registro(hitos, referencia, lambda r: r.description) if referencia else None
+    if origen and destino and destino.id == origen.id:
+        if not _es_relleno(origen):
+            tipo = _tipo_media(origen.photo_ref)
+            await message.answer(
+                f"{'Ese' if tipo == 'video' else 'Esa'} {tipo} ya está en "
+                f"«{origen.description}» 🙂"
+            )
+            return
+        # La referencia coincidió con el propio relleno («el último», «video»...).
+        otros = [h for h in hitos if h.id != origen.id]
+        destino = _elegir_registro(otros, referencia, lambda r: r.description)
+
+    if destino is None:
+        if not ext.descripcion:
+            await message.answer(
+                "No encontré ese hito 🙈. Dime cuál (ej. «el hito de que gateó») "
+                "o qué pasó y cuándo para crearlo."
+            )
+            return
+        fecha = _parse_date(ext.fecha) or hoy()
+        destino = await crud.add_milestone(
+            message.from_user.id, child.id, ext.descripcion, fecha
+        )
+
+    if pendiente:
+        await _guardar_media_pendiente(message, state, destino, pendiente)
+        return
+    if destino.photo_ref:
+        await message.answer(
+            f"«{destino.description}» ya tiene un archivo 🙈. Cada hito guarda uno solo."
+        )
+        return
+    if _es_relleno(origen):
+        await _mover_media(message, origen, destino)
+        return
+    tipo = _tipo_media(origen.photo_ref)
+    await message.answer(
+        f"¿Paso {'el' if tipo == 'video' else 'la'} {tipo} de «{origen.description}» a "
+        f"«{destino.description}»?",
+        reply_markup=_kb_mover_media(origen.id, destino.id),
     )
 
 
@@ -792,6 +1205,10 @@ async def on_photo(message: Message, state: FSMContext) -> None:
             "Reenvíamela en unos segundos 🙂"
         )
         return
+    if analisis and analisis.tipo == "cartilla":
+        delete_media(media_ref)  # solo interesan sus datos, y es información de salud
+        await _proponer_cartilla(message, state, child, analisis.controles or [])
+        return
     if analisis and analisis.tipo == "medico" and analisis.contenido:
         await crud.add_advice(
             message.from_user.id, child.id, analisis.contenido, source="foto", photo_ref=media_ref
@@ -818,6 +1235,12 @@ async def on_video(message: Message, state: FSMContext) -> None:
     if not child:
         return
     caption = (message.caption or "").strip()
+    data = await state.get_data()
+    if not caption and data.get("media_sin_hito") and data.get("pending_media_hito") is None:
+        await message.answer(
+            "Primero dime a qué hito va el video anterior 🙂 y luego me reenvías este."
+        )
+        return
     media_ref = await _save_video_ref(message)
 
     if await _adjuntar_media_pendiente(message, state, media_ref):
@@ -831,8 +1254,14 @@ async def on_video(message: Message, state: FSMContext) -> None:
         fecha = _parse_date(mp.fecha) or hoy()
         desc = mp.descripcion or caption
     else:
-        fecha = hoy()
-        desc = "Un video para recordar"
+        # Sin descripción no hay cómo saber qué es: se pregunta en vez de inventar un hito.
+        await state.update_data(media_sin_hito=media_ref)
+        await message.answer(
+            "🎥 ¿A qué hito va este video? Toca uno o escríbeme qué pasó y cuándo "
+            "(ej. <i>gateó el 5 de julio</i>).",
+            reply_markup=_kb_media_sin_hito(await crud.list_milestones(child.id)),
+        )
+        return
     await crud.add_milestone(message.from_user.id, child.id, desc, fecha, media_ref)
     await message.answer(f"🎥 Hito con video guardado ({fecha:%d/%m/%Y}):\n<i>{desc}</i>")
 

@@ -426,6 +426,28 @@ async def update_milestone_media(milestone_id: int, media_ref: str) -> Optional[
         return m
 
 
+async def move_milestone_media(
+    origen_id: int, destino_id: int, borrar_origen: bool = False
+) -> Optional[Milestone]:
+    """Pasa la foto/video de un hito a otro. El origen queda sin media, o se borra si
+    solo existía para guardar ese archivo. Devuelve el destino, o None si no se pudo."""
+    async with SessionLocal() as session:
+        origen = await session.get(Milestone, origen_id)
+        destino = await session.get(Milestone, destino_id)
+        if not origen or not destino or not origen.photo_ref or destino.photo_ref:
+            return None
+        destino.photo_ref = origen.photo_ref
+        session.add(destino)
+        if borrar_origen:
+            await session.delete(origen)
+        else:
+            origen.photo_ref = None
+            session.add(origen)
+        await session.commit()
+        await session.refresh(destino)
+        return destino
+
+
 async def delete_milestone(milestone_id: int) -> bool:
     async with SessionLocal() as session:
         m = await session.get(Milestone, milestone_id)

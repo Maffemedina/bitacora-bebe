@@ -16,6 +16,10 @@ Este repo es una plantilla abierta: clónalo, ponle tus llaves y en unos minutos
 | --- | --- |
 | «gateó por primera vez hoy» | Guarda un **hito** con la fecha de hoy y te ofrece adjuntarle una foto |
 | *(foto con pie)* «esta es del día que dijo papá» | **Adjunta** la foto al hito que ya existía |
+| *(video sin descripción)* | Pregunta **a qué hito va**, en vez de inventar uno |
+| «el video que te envié pásalo al hito de que gateó» | **Mueve** el archivo a ese hito |
+| «¿cuándo caminó Joshua?» | Dice la **fecha**, la **edad que tenía** y las medidas del control más cercano |
+| *(foto de la cartilla de crecimiento)* | Lee las medidas, te las muestra y **las guarda si confirmas** |
 | *(foto de una fórmula médica)* | La lee y guarda la **indicación del pediatra** |
 | *(nota de voz)* «tiene cita con el pediatra el 27 a las 3» | La **transcribe** y agenda la **cita** |
 | «fue al control: 8,2 kg, 70 cm y 44 de perímetro» | Guarda el **control** de crecimiento |

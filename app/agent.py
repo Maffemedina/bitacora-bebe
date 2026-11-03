@@ -31,6 +31,7 @@ class Extraccion(BaseModel):
     peso: Optional[float] = None            # registrar_control: kg
     talla: Optional[float] = None           # registrar_control: cm
     perimetro: Optional[float] = None       # registrar_control: perímetro cefálico cm
+    tipo_media: Optional[str] = None        # adjuntar_media: 'video' | 'foto'
 
 
 class Plan(BaseModel):
@@ -39,11 +40,19 @@ class Plan(BaseModel):
     acciones: list[Extraccion]
 
 
+class MedidaCartilla(BaseModel):
+    fecha: Optional[str] = None         # YYYY-MM-DD
+    peso: Optional[float] = None        # kg
+    talla: Optional[float] = None       # cm
+    perimetro: Optional[float] = None   # perímetro cefálico cm
+
+
 class FotoAnalisis(BaseModel):
-    tipo: str                                # 'momento' | 'medico'
+    tipo: str                                # 'momento' | 'medico' | 'cartilla'
     descripcion: Optional[str] = None        # para momento
     fecha: Optional[str] = None              # YYYY-MM-DD si es visible
     contenido: Optional[str] = None          # para medico: texto extraído
+    controles: Optional[list[MedidaCartilla]] = None  # para cartilla: una por fila
 
 
 class MediaPlan(BaseModel):
@@ -57,6 +66,10 @@ class Medidas(BaseModel):
     peso: Optional[float] = None        # kg
     talla: Optional[float] = None       # cm
     perimetro: Optional[float] = None   # perímetro cefálico cm
+
+
+class _HitoElegido(BaseModel):
+    id: Optional[int] = None
 
 
 class _SoloFecha(BaseModel):
@@ -77,7 +90,9 @@ def _get_client():
     return _client
 
 
-async def planear(mensaje: str, hoy_iso: str, baby_name: str) -> list[Extraccion]:
+async def planear(
+    mensaje: str, hoy_iso: str, baby_name: str, contexto: str = ""
+) -> list[Extraccion]:
     from google.genai import types
 
     sistema = (
@@ -116,6 +131,18 @@ async def planear(mensaje: str, hoy_iso: str, baby_name: str) -> list[Extraccion
         "'fecha_hora_cita' YYYY-MM-DDTHH:MM.\n"
         "- borrar_hito: quiere ELIMINAR/borrar un hito ya guardado. Extrae 'referencia' "
         "(cuál hito: parte de su descripción, o 'el último').\n"
+        "- adjuntar_media: quiere asociar, pasar o mover a un hito un VIDEO o FOTO que YA "
+        "envió antes (ej. «el video que te envié pásalo al hito de que gateó», «guarda ese "
+        "video como evidencia de que gateó el 5 de julio», «la foto de antes va en el hito "
+        "de papá»). Extrae 'referencia' (el hito de DESTINO: solo lo que pasó, sin el nombre "
+        "del bebé), 'tipo_media' ('video' o 'foto') y, si dice lo que pasó, 'descripcion' y "
+        "'fecha' YYYY-MM-DD (si no la menciona, déjala vacía). Si habla de un video o foto "
+        "ya enviado, va aquí y NO en guardar_hito.\n"
+        "- consultar_hito: pregunta CUÁNDO pasó algo de SU bebé, o qué edad tenía o cuánto "
+        "pesaba cuando pasó (ej. «¿cuándo caminó Joshua?», «¿qué edad tenía cuando gateó?», "
+        "«¿cuánto pesaba cuando le salió el primer diente?»). Extrae 'referencia' (solo lo "
+        "que pasó, sin el nombre del bebé). Si pregunta en general por los bebés (ej. «¿a "
+        "qué edad caminan los bebés?»), es pregunta_bebe.\n"
         "- registrar_control: dice que el bebé fue al pediatra/médico/control (ej. «fue "
         "hoy al pediatra», «fue al médico el 3 de enero»). Extrae 'fecha' YYYY-MM-DD "
         "(si no dice, usa hoy) y, SI las menciona, 'peso' (kg), 'talla' (cm) y "
@@ -137,7 +164,7 @@ async def planear(mensaje: str, hoy_iso: str, baby_name: str) -> list[Extraccion
         "El mensaje puede contener UNA o VARIAS acciones (ej. algo de un hijo y algo "
         "de OTRO hijo). Devuelve una lista 'acciones' con una entrada por cada acción. "
         "En CADA acción, si se menciona el nombre de un hijo, ponlo en 'nombre_hijo'. "
-        "Devuelve SOLO el JSON."
+        "Devuelve SOLO el JSON." + contexto
     )
     try:
         resp = await _get_client().aio.models.generate_content(
@@ -172,7 +199,13 @@ async def analizar_foto(
         "(qué se ve, breve y cálida) y 'fecha' YYYY-MM-DD solo si hay una fecha visible.\n"
         "Si es un documento, receta, fórmula médica o indicación del pediatra: "
         "tipo='medico' y en 'contenido' extrae en texto claro las recomendaciones o "
-        "indicaciones (medicamentos, dosis, cuidados). Devuelve SOLO el JSON."
+        "indicaciones (medicamentos, dosis, cuidados).\n"
+        "Si es una cartilla, carné o tabla de crecimiento con mediciones por fecha: "
+        "tipo='cartilla' y en 'controles' una entrada por fila con 'fecha' YYYY-MM-DD (las "
+        "fechas están en orden día/mes/año), 'peso' en kg (si está en gramos, conviértelo), "
+        "'talla' en cm y 'perimetro' (perímetro cefálico) en cm. Copia SOLO lo que se lee "
+        "con claridad: si un dato no se lee o no está, déjalo vacío. NUNCA lo adivines, "
+        "calcules ni completes. Devuelve SOLO el JSON."
     )
     try:
         resp = await _get_client().aio.models.generate_content(
@@ -194,6 +227,39 @@ async def analizar_foto(
         return FotoAnalisis(**json.loads(resp.text))
     except Exception:
         return FotoAnalisis(tipo="error")
+
+
+async def elegir_hito(pregunta: str, hitos: list[tuple[int, str]]) -> Optional[int]:
+    """¿Cuál de estos hitos es el que preguntan? Devuelve su id, o None si no está.
+
+    Si Gemini falla, deja pasar el error: «no pude revisar» no es lo mismo que «no está».
+    """
+    from google.genai import types
+
+    lista = "\n".join(f"{i}: {desc}" for i, desc in hitos)
+    sistema = (
+        "Una mamá pregunta por un suceso de su bebé. Estos son los hitos guardados "
+        f"(id: descripción):\n{lista}\n"
+        "Compara por SIGNIFICADO, no por palabras, y devuelve el 'id' del hito que trata "
+        "del mismo suceso. Son el mismo suceso, por ejemplo: «caminó» y «dio sus primeros "
+        "pasos»; «habló» y «dijo su primera palabra»; «le salió un diente» y «primer "
+        "diente». Son sucesos distintos: gatear y caminar, sonreír y reír. Si ninguno es "
+        "ese suceso, deja 'id' vacío. Devuelve SOLO el JSON."
+    )
+    resp = await _get_client().aio.models.generate_content(
+        model=settings.gemini_model,
+        contents=pregunta,
+        config=types.GenerateContentConfig(
+            system_instruction=sistema,
+            response_mime_type="application/json",
+            response_schema=_HitoElegido,
+            temperature=0,
+        ),
+    )
+    elegido = resp.parsed
+    if isinstance(elegido, _HitoElegido):
+        return elegido.id
+    return _HitoElegido(**json.loads(resp.text)).id
 
 
 async def clasificar_media(caption: str, hoy_iso: str, baby_name: str) -> MediaPlan:

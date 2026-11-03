@@ -27,6 +27,15 @@ def media_fullpath(ref: str) -> str:
     return os.path.join(settings.media_dir, ref[len("vol:"):])
 
 
+def delete_media(ref: str) -> None:
+    """Borra del volumen una referencia 'vol:...' (las demás no ocupan espacio aquí)."""
+    if ref.startswith("vol:"):
+        try:
+            os.remove(media_fullpath(ref))
+        except OSError:
+            pass
+
+
 def _client():
     if not settings.s3_bucket:
         raise RuntimeError("S3_BUCKET no está configurado (ver .env).")
