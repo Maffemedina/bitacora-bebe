@@ -134,7 +134,7 @@ async def test_segundo_video_no_pisa_al_pendiente(state, joshua):
     msg = FakeMessage(video=_video("dos"))
     await handlers.on_video(msg, state)
 
-    assert "video anterior" in msg.respuestas[-1]
+    assert "archivo anterior" in msg.respuestas[-1]
     assert (await state.get_data())["media_sin_hito"] == "tgv:uno"
 
 
@@ -240,7 +240,7 @@ async def test_no_pisa_un_hito_que_ya_tiene_archivo(state, joshua, monkeypatch):
     await handlers.on_text(msg, state)
 
     assert (await crud.get_milestone(gateo.id)).photo_ref == "tgv:viejo"
-    assert "ya tiene un archivo" in msg.respuestas[-1]
+    assert "ya tiene un video" in msg.respuestas[-1]
 
 
 async def test_sin_archivos_lo_dice(state, joshua, monkeypatch):
@@ -249,3 +249,129 @@ async def test_sin_archivos_lo_dice(state, joshua, monkeypatch):
     await handlers.on_text(msg, state)
 
     assert "No encontré ningún archivo" in msg.respuestas[-1]
+
+
+# ---------- Hito esperando archivo: que no se pegue al equivocado ----------
+
+async def _hito_esperando(state, joshua, descripcion="gateó"):
+    m = await crud.add_milestone(A, joshua.id, descripcion, date(2026, 7, 5))
+    await state.update_data(pending_media_hito=m.id)
+    return m
+
+
+def _clasifica(monkeypatch, **plan):
+    vistos = {}
+
+    async def clasificar(caption, hoy_iso, baby_name, hito_esperando=None):
+        vistos["hito_esperando"] = hito_esperando
+        return agent.MediaPlan(**plan)
+
+    monkeypatch.setattr(agent, "clasificar_media", clasificar)
+    return vistos
+
+
+async def test_sin_descripcion_va_al_hito_esperando_y_dice_cual(state, joshua):
+    m = await _hito_esperando(state, joshua)
+    msg = FakeMessage(video=_video())
+    await handlers.on_video(msg, state)
+
+    assert (await crud.get_milestone(m.id)).photo_ref == "tgv:abc"
+    assert "gateó" in msg.respuestas[-1]
+    assert (await state.get_data())["pending_media_hito"] is None
+    botones = [b.callback_data for fila in msg.teclados[-1].inline_keyboard for b in fila]
+    assert f"mediaotro:{m.id}" in botones
+
+
+async def test_la_descripcion_manda_sobre_el_hito_esperando(state, joshua, monkeypatch):
+    gateo = await _hito_esperando(state, joshua)
+    papa = await crud.add_milestone(A, joshua.id, "dijo papá", date(2026, 1, 15))
+    vistos = _clasifica(monkeypatch, accion="adjuntar", referencia="dijo papá")
+    msg = FakeMessage(video=_video(), caption="cuando dijo papá")
+    await handlers.on_video(msg, state)
+
+    assert (await crud.get_milestone(gateo.id)).photo_ref is None
+    assert (await crud.get_milestone(papa.id)).photo_ref == "tgv:abc"
+    assert vistos["hito_esperando"] == "gateó"
+    assert "dijo papá" in msg.respuestas[-1]
+
+
+async def test_seguir_conversando_cancela_la_oferta(state, joshua, monkeypatch):
+    m = await _hito_esperando(state, joshua)
+    _planea(monkeypatch, Extraccion(intent="otro"))
+    await handlers.on_text(FakeMessage(text="hola"), state)
+    msg = FakeMessage(video=_video())
+    await handlers.on_video(msg, state)
+
+    assert (await crud.get_milestone(m.id)).photo_ref is None
+    assert "A qué hito" in msg.respuestas[-1]
+
+
+async def test_no_era_ese_saca_el_archivo_y_pregunta(state, joshua):
+    m = await _hito_esperando(state, joshua)
+    msg = FakeMessage(video=_video())
+    await handlers.on_video(msg, state)
+    await handlers.cb_mediaotro(_cb(f"mediaotro:{m.id}", msg), state)
+
+    assert (await crud.get_milestone(m.id)).photo_ref is None
+    assert (await state.get_data())["media_sin_hito"] == "tgv:abc"
+    assert "A qué hito" in msg.respuestas[-1]
+
+
+async def test_ajeno_no_usa_no_era_ese(state, joshua):
+    m = await crud.add_milestone(A, joshua.id, "gateó", date(2026, 7, 5), "tgv:v")
+    msg = FakeMessage()
+    await handlers.cb_mediaotro(_cb(f"mediaotro:{m.id}", msg, user_id=B), state)
+
+    assert (await crud.get_milestone(m.id)).photo_ref == "tgv:v"
+
+
+async def test_si_gemini_falla_con_descripcion_pregunta_sin_crear_hito(state, joshua, monkeypatch):
+    _clasifica(monkeypatch, accion="error")
+    msg = FakeMessage(video=_video(), caption="gateó")
+    await handlers.on_video(msg, state)
+
+    assert await crud.list_milestones(joshua.id) == []
+    assert "A qué hito" in msg.respuestas[-1]
+
+
+# ---------- Hito que ya tiene archivo ----------
+
+async def test_descripcion_no_pisa_y_ofrece_reemplazar(state, joshua, monkeypatch):
+    m = await crud.add_milestone(A, joshua.id, "gateó", date(2026, 7, 5), "tgv:viejo")
+    _clasifica(monkeypatch, accion="adjuntar", referencia="gateó")
+    msg = FakeMessage(video=_video(), caption="del día que gateó")
+    await handlers.on_video(msg, state)
+
+    assert (await crud.get_milestone(m.id)).photo_ref == "tgv:viejo"
+    assert "ya tiene un video" in msg.respuestas[-1]
+    botones = [b.callback_data for fila in msg.teclados[-1].inline_keyboard for b in fila]
+    assert f"mediareemp:{m.id}" in botones
+
+    await handlers.cb_mediareemp(_cb(f"mediareemp:{m.id}", msg), state)
+    assert (await crud.get_milestone(m.id)).photo_ref == "tgv:abc"
+    assert (await state.get_data())["media_sin_hito"] is None
+
+
+async def test_ajeno_no_reemplaza(state, joshua):
+    m = await crud.add_milestone(A, joshua.id, "gateó", date(2026, 7, 5), "tgv:viejo")
+    await state.update_data(media_sin_hito="tgv:abc")
+    await handlers.cb_mediareemp(_cb(f"mediareemp:{m.id}", FakeMessage(), user_id=B), state)
+
+    assert (await crud.get_milestone(m.id)).photo_ref == "tgv:viejo"
+
+
+async def test_mover_con_reemplazo_solo_si_se_confirma(state, joshua, monkeypatch):
+    destino = await crud.add_milestone(A, joshua.id, "gateó", date(2026, 7, 5), "tgv:viejo")
+    origen = await crud.add_milestone(A, joshua.id, "dijo papá", date(2026, 1, 15), "tgv:nuevo")
+    _planea(monkeypatch, Extraccion(intent="adjuntar_media", referencia="gateó", tipo_media="video"))
+    msg = FakeMessage(text="el video pásalo al hito de gateó")
+    await handlers.on_text(msg, state)
+
+    assert (await crud.get_milestone(destino.id)).photo_ref == "tgv:viejo"
+    assert "lo reemplace" in msg.respuestas[-1]
+    botones = [b.callback_data for fila in msg.teclados[-1].inline_keyboard for b in fila]
+    assert f"movmedia:{origen.id}:{destino.id}:r" in botones
+
+    await handlers.cb_movmedia(_cb(f"movmedia:{origen.id}:{destino.id}:r", msg))
+    assert (await crud.get_milestone(destino.id)).photo_ref == "tgv:nuevo"
+    assert (await crud.get_milestone(origen.id)).photo_ref is None

@@ -11,11 +11,33 @@ Diseño: el modelo solo ENTIENDE; el código (handlers.py) ejecuta las acciones.
 """
 
 import json
+import logging
 from typing import Optional
 
 from pydantic import BaseModel
 
 from app.config import settings
+
+log = logging.getLogger("bitacora")
+
+
+def fallo(donde: str, exc: Exception) -> str:
+    """Registra el error real de Gemini y devuelve qué decirle a la persona.
+
+    El plan gratis tiene un tope diario: prometer «unos segundos» sería falso.
+    """
+    detalle = str(exc)
+    log.warning("Gemini falló en %s: %s: %s", donde, type(exc).__name__, detalle[:300])
+    if "429" in detalle or "RESOURCE_EXHAUSTED" in detalle:
+        if "PerDay" in detalle:
+            return (
+                "⏳ Se acabó la cuota gratis de hoy de Gemini y no puedo entender mensajes "
+                "hasta que se renueve; puede tardar hasta mañana. /recap sigue funcionando 🙂"
+            )
+        return "⏳ Recibí muchas peticiones seguidas (plan gratis de Gemini). Prueba en un minuto 🙂"
+    if "503" in detalle or "UNAVAILABLE" in detalle:
+        return "⏳ Gemini está saturado ahora mismo. Prueba en un rato 🙂"
+    return "⏳ No pude conectarme con Gemini. Prueba en un rato 🙂"
 
 
 class Extraccion(BaseModel):
@@ -56,7 +78,7 @@ class FotoAnalisis(BaseModel):
 
 
 class MediaPlan(BaseModel):
-    accion: str                          # 'adjuntar' | 'nuevo'
+    accion: str                          # 'adjuntar' | 'nuevo' | 'error'
     referencia: Optional[str] = None     # si adjuntar: cuál hito
     descripcion: Optional[str] = None    # si nuevo
     fecha: Optional[str] = None          # si nuevo: YYYY-MM-DD
@@ -140,8 +162,10 @@ async def planear(
         "ya enviado, va aquí y NO en guardar_hito.\n"
         "- consultar_hito: pregunta CUÁNDO pasó algo de SU bebé, o qué edad tenía o cuánto "
         "pesaba cuando pasó (ej. «¿cuándo caminó Joshua?», «¿qué edad tenía cuando gateó?», "
-        "«¿cuánto pesaba cuando le salió el primer diente?»). Extrae 'referencia' (solo lo "
-        "que pasó, sin el nombre del bebé). Si pregunta en general por los bebés (ej. «¿a "
+        "«¿cuánto pesaba cuando le salió el primer diente?»), o si un hito tiene foto o video "
+        "(ej. «¿ese hito tiene video?», «muéstrame el video de cuando gateó»). Extrae "
+        "'referencia' (solo lo que pasó, sin el nombre del bebé); si dice «ese hito» sin "
+        "decir cuál, déjala vacía. Si pregunta en general por los bebés (ej. «¿a "
         "qué edad caminan los bebés?»), es pregunta_bebe.\n"
         "- registrar_control: dice que el bebé fue al pediatra/médico/control (ej. «fue "
         "hoy al pediatra», «fue al médico el 3 de enero»). Extrae 'fecha' YYYY-MM-DD "
@@ -183,9 +207,9 @@ async def planear(
         data = json.loads(resp.text)
         acciones = [Extraccion(**a) for a in data.get("acciones", [])]
         return acciones or [Extraccion(intent="otro")]
-    except Exception:
+    except Exception as exc:
         # Falla de red o cuota: intent especial para avisar sin confundir con 'otro'
-        return [Extraccion(intent="_error")]
+        return [Extraccion(intent="_error", descripcion=fallo("planear", exc))]
 
 
 async def analizar_foto(
@@ -225,8 +249,8 @@ async def analizar_foto(
         if isinstance(res, FotoAnalisis):
             return res
         return FotoAnalisis(**json.loads(resp.text))
-    except Exception:
-        return FotoAnalisis(tipo="error")
+    except Exception as exc:
+        return FotoAnalisis(tipo="error", contenido=fallo("analizar_foto", exc))
 
 
 async def elegir_hito(pregunta: str, hitos: list[tuple[int, str]]) -> Optional[int]:
@@ -262,7 +286,9 @@ async def elegir_hito(pregunta: str, hitos: list[tuple[int, str]]) -> Optional[i
     return _HitoElegido(**json.loads(resp.text)).id
 
 
-async def clasificar_media(caption: str, hoy_iso: str, baby_name: str) -> MediaPlan:
+async def clasificar_media(
+    caption: str, hoy_iso: str, baby_name: str, hito_esperando: Optional[str] = None
+) -> MediaPlan:
     """Una foto/video con pie: ¿adjuntar a un hito existente o es un momento nuevo?"""
     from google.genai import types
 
@@ -274,7 +300,14 @@ async def clasificar_media(caption: str, hoy_iso: str, baby_name: str) -> MediaP
         "y 'referencia' = cómo identifica el hito (parte de su descripción, o 'el último').\n"
         "- Si es un momento NUEVO: accion='nuevo', 'descripcion' (breve) y 'fecha' "
         "YYYY-MM-DD si la menciona (si no, déjala vacía).\n"
-        "Devuelve SOLO el JSON."
+        + (
+            f"Le acabamos de ofrecer añadir una foto o video al hito «{hito_esperando}». Si "
+            "el pie no habla de otro momento (ej. «aquí está», «mira»), usa accion='adjuntar' "
+            f"y referencia='{hito_esperando}'. Si habla de otro momento, ignora esa oferta.\n"
+            if hito_esperando
+            else ""
+        )
+        + "Devuelve SOLO el JSON."
     )
     try:
         resp = await _get_client().aio.models.generate_content(
@@ -291,8 +324,10 @@ async def clasificar_media(caption: str, hoy_iso: str, baby_name: str) -> MediaP
         if isinstance(mp, MediaPlan):
             return mp
         return MediaPlan(**json.loads(resp.text))
-    except Exception:
-        return MediaPlan(accion="nuevo")
+    except Exception as exc:
+        # Sin entender el pie no se inventa un hito: el handler pregunta a cuál va.
+        fallo("clasificar_media", exc)
+        return MediaPlan(accion="error")
 
 
 async def responder_pregunta(pregunta: str, contexto: str) -> str:
@@ -312,8 +347,8 @@ async def responder_pregunta(pregunta: str, contexto: str) -> str:
             config=types.GenerateContentConfig(system_instruction=sistema, temperature=0.4),
         )
         return (resp.text or "").strip() or "No pude responder ahora mismo, intenta de nuevo 🙂"
-    except Exception:
-        return "⏳ Estoy saturada un momento (límite del plan gratis de Gemini). Reinténtalo en unos segundos 🙂"
+    except Exception as exc:
+        return fallo("responder_pregunta", exc)
 
 
 async def parsear_medidas(texto: str) -> Medidas:
@@ -339,7 +374,8 @@ async def parsear_medidas(texto: str) -> Medidas:
         if isinstance(m, Medidas):
             return m
         return Medidas(**json.loads(resp.text))
-    except Exception:
+    except Exception as exc:
+        fallo("parsear_medidas", exc)
         return Medidas()
 
 
@@ -363,8 +399,8 @@ async def valorar_crecimiento(baby_name: str, edad: str, datos: str) -> str:
             config=types.GenerateContentConfig(system_instruction=sistema, temperature=0.4),
         )
         return (resp.text or "").strip()
-    except Exception:
-        return "⏳ No pude analizar ahora mismo, intenta en unos segundos 🙂"
+    except Exception as exc:
+        return fallo("valorar_crecimiento", exc)
 
 
 async def transcribir(audio_bytes: bytes, mime: str) -> str:
@@ -403,5 +439,6 @@ async def fecha_en_texto(texto: str, hoy_iso: str) -> Optional[str]:
         if isinstance(parsed, _SoloFecha):
             return parsed.fecha or None
         return (json.loads(resp.text) or {}).get("fecha") or None
-    except Exception:
+    except Exception as exc:
+        fallo("fecha_en_texto", exc)
         return None

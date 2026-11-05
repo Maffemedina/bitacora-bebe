@@ -291,3 +291,54 @@ async def test_cartilla_ilegible_lo_dice(state, joshua, monkeypatch):
 
     assert "no hay medidas nuevas" in msg.respuestas[-1]
     assert msg.teclados[-1] is None
+
+
+# ---------- ¿Ese hito tiene foto o video? ----------
+
+async def test_ese_hito_usa_el_ultimo_de_la_conversacion(state, joshua, monkeypatch):
+    m = await crud.add_milestone(A, joshua.id, "gateó", date(2026, 7, 5))
+    await state.update_data(ultimo_hito=m.id)
+    _planea(monkeypatch, Extraccion(intent="consultar_hito"))
+    msg = FakeMessage(text="¿ese hito tiene video?")
+    await handlers.on_text(msg, state)
+
+    assert "gateó" in msg.respuestas[-1]
+    assert "aún no tiene foto ni video" in msg.respuestas[-1]
+
+
+async def test_ese_hito_sin_contexto_pregunta_cual(state, joshua, monkeypatch):
+    await crud.add_milestone(A, joshua.id, "gateó", date(2026, 7, 5))
+    _planea(monkeypatch, Extraccion(intent="consultar_hito"))
+    msg = FakeMessage(text="¿ese hito tiene video?")
+    await handlers.on_text(msg, state)
+
+    assert "De cuál hito" in msg.respuestas[-1]
+
+
+# ---------- Errores de Gemini ----------
+
+@pytest.mark.parametrize(
+    "error, esperado, prohibido",
+    [
+        ("429 RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel-FreeTier", "cuota gratis de hoy", "un minuto"),
+        ("429 RESOURCE_EXHAUSTED per minute", "un minuto", "de hoy"),
+        ("503 UNAVAILABLE overloaded", "saturado", "cuota"),
+        ("otra cosa", "No pude conectarme", "cuota"),
+    ],
+)
+def test_el_mensaje_depende_del_error_y_lo_registra(error, esperado, prohibido, caplog):
+    with caplog.at_level("WARNING", logger="bitacora"):
+        texto = agent.fallo("planear", RuntimeError(error))
+
+    assert esperado in texto
+    assert prohibido not in texto
+    assert "unos segundos" not in texto
+    assert error[:20] in caplog.text
+
+
+async def test_cuota_agotada_se_le_dice_a_la_persona(state, joshua, monkeypatch):
+    _planea(monkeypatch, Extraccion(intent="_error", descripcion="⏳ Se acabó la cuota"))
+    msg = FakeMessage(text="hola")
+    await handlers.on_text(msg, state)
+
+    assert msg.respuestas[-1] == "⏳ Se acabó la cuota"

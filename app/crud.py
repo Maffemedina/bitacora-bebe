@@ -414,7 +414,9 @@ async def update_milestone_date(milestone_id: int, new_date: date) -> Optional[M
         return m
 
 
-async def update_milestone_media(milestone_id: int, media_ref: str) -> Optional[Milestone]:
+async def update_milestone_media(
+    milestone_id: int, media_ref: Optional[str]
+) -> Optional[Milestone]:
     async with SessionLocal() as session:
         m = await session.get(Milestone, milestone_id)
         if not m:
@@ -427,14 +429,17 @@ async def update_milestone_media(milestone_id: int, media_ref: str) -> Optional[
 
 
 async def move_milestone_media(
-    origen_id: int, destino_id: int, borrar_origen: bool = False
+    origen_id: int, destino_id: int, borrar_origen: bool = False, reemplazar: bool = False
 ) -> Optional[Milestone]:
     """Pasa la foto/video de un hito a otro. El origen queda sin media, o se borra si
-    solo existía para guardar ese archivo. Devuelve el destino, o None si no se pudo."""
+    solo existía para guardar ese archivo. Si el destino ya tiene archivo solo se pisa con
+    reemplazar=True. Devuelve el destino, o None si no se pudo."""
     async with SessionLocal() as session:
         origen = await session.get(Milestone, origen_id)
         destino = await session.get(Milestone, destino_id)
-        if not origen or not destino or not origen.photo_ref or destino.photo_ref:
+        if not origen or not destino or not origen.photo_ref:
+            return None
+        if destino.photo_ref and not reemplazar:
             return None
         destino.photo_ref = origen.photo_ref
         session.add(destino)
