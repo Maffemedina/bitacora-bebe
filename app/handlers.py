@@ -9,7 +9,7 @@ y ejecutan las acciones contra la base de datos.
 
 import logging
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from aiogram import F, Router
@@ -734,7 +734,10 @@ async def _procesar_texto(
             "no está en la lista, usa guardar_hito."
         )
 
-    acciones = await agent.planear(texto, hoy().isoformat(), child.name, contexto)
+    momento = ahora()
+    acciones = await agent.planear(
+        texto, f"{momento:%Y-%m-%d} y son las {momento:%H:%M}", child.name, contexto
+    )
     chat_id = message.from_user.id
     log.info("chat %s (%s) -> %s", chat_id, source, [a.intent for a in acciones])
     activo = child
@@ -831,6 +834,9 @@ async def _ejecutar_accion(
         await message.answer(
             f"📅 <b>Próximas citas de {child.name}:</b>\n" + "\n".join(lineas)
         )
+
+    elif ext.intent == "crear_recordatorio":
+        await _crear_recordatorio(message, ext)
 
     elif ext.intent == "guardar_recomendacion":
         contenido = ext.recomendacion or texto
@@ -1044,6 +1050,35 @@ async def on_voice(message: Message, state: FSMContext) -> None:
         return
     await message.answer(f"📝 Te entendí: <i>{texto}</i>")
     await _procesar_texto(message, child, texto, state, source="audio")
+
+
+def _cuando_recordar(ext, ahora_: datetime) -> Optional[datetime]:
+    if ext.en_minutos and ext.en_minutos > 0:
+        return ahora_ + timedelta(minutes=ext.en_minutos)
+    return _parse_dt(ext.fecha_hora_recordatorio)
+
+
+async def _crear_recordatorio(message: Message, ext) -> None:
+    """«Recuérdame en 2 minutos darle agua»: se avisa solo a quien lo pidió."""
+    que = (ext.recordatorio or "").strip()
+    if not que:
+        await message.answer("¿Qué quieres que te recuerde? 🙂")
+        return
+    momento = ahora()
+    cuando = _cuando_recordar(ext, momento)
+    if cuando is None:
+        await message.answer(
+            "¿Para cuándo te lo recuerdo? (ej. <i>a las 8 de la noche</i> o "
+            "<i>en 10 minutos</i>)"
+        )
+        return
+    if cuando <= momento:
+        await message.answer("Esa hora ya pasó 🙈. ¿Para cuándo te lo recuerdo?")
+        return
+    await crud.add_reminder(message.from_user.id, que, cuando)
+    await message.answer(
+        f"⏰ Listo, te lo recuerdo {reminders.cuando_texto(cuando, momento)}:\n<i>{que}</i>"
+    )
 
 
 async def _adjuntar_a_hito(message: Message, state: FSMContext, hito, media_ref: str) -> None:

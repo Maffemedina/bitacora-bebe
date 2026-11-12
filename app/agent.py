@@ -54,6 +54,9 @@ class Extraccion(BaseModel):
     talla: Optional[float] = None           # registrar_control: cm
     perimetro: Optional[float] = None       # registrar_control: perímetro cefálico cm
     tipo_media: Optional[str] = None        # adjuntar_media: 'video' | 'foto'
+    recordatorio: Optional[str] = None      # crear_recordatorio: qué recordar
+    en_minutos: Optional[int] = None        # crear_recordatorio: «en 10 minutos»
+    fecha_hora_recordatorio: Optional[str] = None  # crear_recordatorio: YYYY-MM-DDTHH:MM
 
 
 class Plan(BaseModel):
@@ -131,6 +134,14 @@ async def planear(
         "SIEMPRE futuras: si no dan año, usa la próxima fecha futura respecto a hoy "
         "(NUNCA una fecha pasada). Si no dan hora, usa las 09:00.\n"
         "- listar_citas: pregunta por citas próximas.\n"
+        "- crear_recordatorio: pide que le RECUERDES o avises algo (ej. «recuérdame darle "
+        "la vitamina a las 8 de la noche», «recuérdame en 2 minutos darle agua a Emilia», "
+        "«avísame mañana a las 7 que lleve el carné»). Extrae 'recordatorio' (qué hay que "
+        "hacer, breve) y CUÁNDO: si es relativo («en 10 minutos», «en una hora»), "
+        "'en_minutos' como número entero; si da hora o fecha, 'fecha_hora_recordatorio' "
+        "YYYY-MM-DDTHH:MM (si solo dice la hora, es la próxima vez que llegue esa hora). "
+        "Una cita médica o evento con fecha y hora sin pedir que se lo recuerdes es "
+        "agendar_cita.\n"
         "- guardar_recomendacion: la persona comparte una indicación/recomendación "
         "del pediatra o médico (dosis, cuidados, alimentación...). Pon el texto en "
         "'recomendacion'.\n"

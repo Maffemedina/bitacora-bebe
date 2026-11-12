@@ -19,7 +19,7 @@ from app.utils import ahora
 
 log = logging.getLogger(__name__)
 
-INTERVALO_SEG = 300  # cada 5 minutos
+INTERVALO_SEG = 60  # cada minuto: un «recuérdame en 2 minutos» llega a tiempo
 
 
 def cuando_texto(cita_dt: datetime, ahora_: datetime) -> str:
@@ -71,11 +71,30 @@ async def enviar_pendientes(bot, ahora_: datetime = None, horas: int = None) -> 
     return avisadas
 
 
+async def enviar_recordatorios_libres(bot, ahora_: datetime = None) -> int:
+    """Envía los «recuérdame...» cuya hora llegó, solo a quien los pidió."""
+    ahora_ = ahora_ or ahora()
+    enviados = 0
+    for r in await crud.recordatorios_vencidos(ahora_):
+        await crud.marcar_reminder_enviado(r.id)  # antes de enviar: nunca en bucle
+        tarde = ahora_ - r.due_at > timedelta(minutes=10)
+        nota = f"\n<i>(era para las {r.due_at:%H:%M} del {r.due_at:%d/%m})</i>" if tarde else ""
+        try:
+            await bot.send_message(r.owner_id, f"⏰ <b>Recordatorio</b>: {r.text}{nota}")
+            enviados += 1
+        except Exception:
+            log.warning("No pude enviar el recordatorio %s", r.id)
+    if enviados:
+        log.info("Recordatorios libres enviados: %s", enviados)
+    return enviados
+
+
 async def ciclo_recordatorios(bot) -> None:
     """Corre para siempre junto al polling (ver main.py y run_local.py)."""
     while True:
         try:
             await enviar_pendientes(bot)
+            await enviar_recordatorios_libres(bot)
         except Exception:
             log.exception("Falló la revisión de recordatorios")
         await asyncio.sleep(INTERVALO_SEG)

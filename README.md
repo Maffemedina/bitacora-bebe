@@ -28,6 +28,7 @@ Este repo es una plantilla abierta: clónalo, ponle tus llaves y en unos minutos
 | «¿es normal que no duerma de corrido?» | Responde con contexto de la edad y lo que dijo **su** pediatra |
 | «prepárame el informe para el pediatra» o `/informe` | Un **PDF** con controles, curva, indicaciones, hitos recientes, próximas citas y espacio para tus preguntas |
 | *(nada, el bot escribe primero)* | **Recordatorio** a toda la familia 24 h antes de cada cita |
+| «recuérdame en 10 minutos darle agua» | Te **avisa a ti** a esa hora (también «a las 8 de la noche» o «mañana a las 7») |
 | `/recap` · `/semana` | Todos los hitos con fotos · resumen cálido de la semana |
 | `/compartir` · `/mi_familia` | Enlace de invitación (24 h, un solo uso) · miembros y revocar acceso |
 

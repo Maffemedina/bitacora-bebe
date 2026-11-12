@@ -24,6 +24,7 @@ from app.models import (
     Family,
     FamilyMember,
     Milestone,
+    Reminder,
     Rol,
     UserProfile,
 )
@@ -131,6 +132,9 @@ async def reiniciar_demo(chat_id: int, hoy_: Optional[date] = None) -> Resultado
                 await session.execute(delete(modelo).where(modelo.child_id.in_(ids)))
             await session.execute(delete(Child).where(Child.id.in_(ids)))
             await session.commit()
+        # Los «recuérdame...» de ensayos anteriores (la cuenta es solo de demo).
+        await session.execute(delete(Reminder).where(Reminder.owner_id == chat_id))
+        await session.commit()
 
         nacimiento = hoy_ - timedelta(days=DIAS_DE_VIDA)
         bebe = Child(owner_id=chat_id, family_id=demo.id, name=NOMBRE, birthdate=nacimiento)

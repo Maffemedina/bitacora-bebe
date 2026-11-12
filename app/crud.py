@@ -14,6 +14,7 @@ from sqlalchemy import select, update
 from app import roles
 from app.db import SessionLocal
 from app.models import (
+    Reminder,
     Advice,
     Appointment,
     Child,
@@ -549,6 +550,36 @@ async def update_appointment_datetime(
 
 
 # ---------- Controles de crecimiento ----------
+
+async def add_reminder(owner_id: int, text: str, due_at: datetime) -> Reminder:
+    async with SessionLocal() as session:
+        r = Reminder(owner_id=owner_id, text=text, due_at=due_at)
+        session.add(r)
+        await session.commit()
+        await session.refresh(r)
+        return r
+
+
+async def recordatorios_vencidos(hasta: datetime) -> Sequence[Reminder]:
+    """Recordatorios libres sin enviar cuya hora ya llegó."""
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Reminder)
+            .where(Reminder.reminded.is_(False))
+            .where(Reminder.due_at <= hasta)
+            .order_by(Reminder.due_at)
+        )
+        return result.scalars().all()
+
+
+async def marcar_reminder_enviado(reminder_id: int) -> None:
+    async with SessionLocal() as session:
+        r = await session.get(Reminder, reminder_id)
+        if r:
+            r.reminded = True
+            session.add(r)
+            await session.commit()
+
 
 async def add_control(
     owner_id: int,
