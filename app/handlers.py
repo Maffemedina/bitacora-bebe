@@ -1474,6 +1474,21 @@ async def cmd_mi_familia(message: Message, state: FSMContext) -> None:
     await message.answer("\n".join(lineas), reply_markup=kb)
 
 
+@router.message(Command("demo"))
+async def cmd_demo(message: Message, state: FSMContext) -> None:
+    """Reinicia la bebé ficticia de la charla. Solo para las cuentas de DEMO_CHAT_IDS."""
+    from app.acceso import ids_permitidos
+    from app.demo import reiniciar_demo
+
+    if message.from_user.id not in ids_permitidos(settings.demo_chat_ids):
+        await message.answer("Ese comando no está disponible 🙂")
+        return
+    await state.clear()
+    resultado = await reiniciar_demo(message.from_user.id)
+    log.info("chat %s -> demo reiniciada: %s", message.from_user.id, resultado.ok)
+    await message.answer(resultado.mensaje)
+
+
 @router.message(Command("mi_id"))
 async def cmd_mi_id(message: Message) -> None:
     await message.answer(

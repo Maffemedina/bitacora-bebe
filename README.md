@@ -211,6 +211,20 @@ cambiar Gemini por otro modelo (todo el acceso a la IA vive en `agent.py`).
   polling (sin cron ni colas extra); cada cita se marca como avisada antes de enviar,
   para que un fallo de Telegram nunca termine en avisos repetidos.
 
+## Demo para charlas (`/demo`)
+
+Para mostrar el bot sin datos reales, una cuenta de Telegram aparte puede cargar a
+**Emilia**, una bebé ficticia de unos 10 meses con hitos, controles de crecimiento,
+indicaciones del pediatra y una cita en unos días. Las fechas se calculan desde hoy,
+así que la demo se ve igual cada vez.
+
+1. Desde la cuenta de la demo, escríbele `/mi_id` al bot y copia el número.
+2. En Railway, agrega la variable `DEMO_CHAT_IDS` con ese número.
+3. Desde esa cuenta, escribe `/demo`. Repítelo antes de cada ensayo para dejarla como nueva.
+
+`/demo` solo toca la familia marcada como demo. Si la cuenta ya tiene bebés reales,
+no hace nada.
+
 ## Licencia
 
 MIT. Úsalo, modifícalo y compártelo. Hecho con 💛 por **Maffemedina dev**.

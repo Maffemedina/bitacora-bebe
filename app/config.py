@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     # Los familiares que entren con un enlace de /compartir quedan permitidos.
     allowed_user_ids: str = ""
 
+    # Cuentas de Telegram para la demo de la charla: pueden usar /demo, que borra y
+    # vuelve a crear una bebé ficticia. Ver app/demo.py. Vacío = /demo apagado.
+    demo_chat_ids: str = ""
+
     # Nivel de logs: INFO muestra cada mensaje atendido y qué entendió el agente.
     log_level: str = "INFO"
 

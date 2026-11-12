@@ -49,7 +49,9 @@ class AccesoMiddleware(BaseMiddleware):
 
     def __init__(self, permitidos: Optional[set] = None) -> None:
         self.permitidos = (
-            permitidos if permitidos is not None else ids_permitidos(settings.allowed_user_ids)
+            permitidos
+            if permitidos is not None
+            else ids_permitidos(settings.allowed_user_ids) | ids_permitidos(settings.demo_chat_ids)
         )
 
     async def __call__(
