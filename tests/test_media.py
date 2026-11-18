@@ -375,3 +375,51 @@ async def test_mover_con_reemplazo_solo_si_se_confirma(state, joshua, monkeypatc
     await handlers.cb_movmedia(_cb(f"movmedia:{origen.id}:{destino.id}:r", msg))
     assert (await crud.get_milestone(destino.id)).photo_ref == "tgv:nuevo"
     assert (await crud.get_milestone(origen.id)).photo_ref is None
+
+
+# ---------- «Sí» a la oferta de foto: no abre otra conversación ----------
+
+@pytest.mark.parametrize(
+    "texto",
+    ["Sí", "si", "SI!", "sí, ya te la mando", "claro", "ok", "ahí va", "ya te la envío",
+     "dale, ahorita te la mando", "sí tengo foto", "espérame un momento"],
+)
+def test_reconoce_si_va_el_archivo(texto):
+    assert handlers._es_si_va_el_archivo(texto)
+
+
+@pytest.mark.parametrize(
+    "texto",
+    ["sí, y hoy también gateó", "hola", "no", "¿cuándo gateó?", "si mañana tiene vacuna",
+     "", "Emilia dijo mamá"],
+)
+def test_no_confunde_otros_mensajes_con_si(texto):
+    assert not handlers._es_si_va_el_archivo(texto)
+
+
+async def test_responder_si_mantiene_la_oferta_y_la_foto_va_al_hito(state, joshua, monkeypatch):
+    m = await _hito_esperando(state, joshua, "comió aguacate por primera vez")
+
+    async def no_llamar(*a, **k):
+        raise AssertionError("un «sí» no debe gastar Gemini")
+
+    monkeypatch.setattr(agent, "planear", no_llamar)
+    msg = FakeMessage(text="Sí")
+    await handlers.on_text(msg, state)
+
+    assert "envíamelo" in msg.respuestas[-1]
+    assert (await state.get_data())["pending_media_hito"] == m.id
+
+    video = FakeMessage(video=_video())
+    await handlers.on_video(video, state)
+    assert (await crud.get_milestone(m.id)).photo_ref == "tgv:abc"
+
+
+async def test_la_oferta_es_una_instruccion_con_el_hito(state, joshua):
+    m = await crud.add_milestone(A, joshua.id, "comió aguacate por primera vez", date(2026, 11, 18))
+    msg = FakeMessage()
+    await handlers._sugerir_media(msg, state, m.id)
+
+    assert "¿" not in msg.respuestas[-1]
+    assert "envíamelo ahora" in msg.respuestas[-1]
+    assert "comió aguacate por primera vez" in msg.respuestas[-1]

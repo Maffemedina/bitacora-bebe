@@ -60,6 +60,30 @@ def _sin_acentos(s: str) -> str:
     )
 
 
+# Palabras de una respuesta tipo «sí, ya te la mando» mientras esperamos foto/video.
+_PALABRAS_SI_ARCHIVO = {
+    "si", "sii", "siii", "sip", "claro", "ok", "okay", "oki", "dale", "listo", "bueno",
+    "ya", "va", "vale", "de", "una", "ahi", "aqui", "te", "la", "lo", "las", "los", "me",
+    "mando", "envio", "paso", "subo", "mandare", "enviare", "voy", "a", "mandar", "enviar",
+    "foto", "fotos", "video", "videos", "tengo", "un", "momento", "espera", "esperame",
+    "ahora", "ahorita", "seguro", "por", "supuesto", "obvio", "porfa", "gracias",
+}
+_INICIOS_SI = {"si", "sii", "siii", "sip", "claro", "ok", "okay", "oki", "dale", "listo",
+               "bueno", "ya", "vale", "ahi", "aqui", "te", "voy", "de", "seguro", "obvio",
+               "tengo", "espera", "esperame", "un", "por"}
+
+
+def _es_si_va_el_archivo(texto: str) -> bool:
+    """¿Es solo un «sí, ahí va la foto»? Algo con más contenido va al agente."""
+    limpio = "".join(c if c.isalnum() or c.isspace() else " " for c in _sin_acentos(texto.lower()))
+    palabras = limpio.split()
+    return (
+        0 < len(palabras) <= 7
+        and palabras[0] in _INICIOS_SI
+        and all(p in _PALABRAS_SI_ARCHIVO for p in palabras)
+    )
+
+
 def _elegir_registro(registros, referencia, get_text):
     """Decide CUÁL registro corregir: por 'el último' o por coincidencia de texto."""
     if not registros:
@@ -715,6 +739,10 @@ async def _procesar_texto(
         await state.update_data(pending_media_hito=None)
         await message.answer("Listo, lo dejé guardado sin foto 🙂")
         return
+    # «Sí», «ya te la mando», «ahí va»: sigue esperando el archivo (y no gasta Gemini).
+    if data.get("pending_media_hito") is not None and _es_si_va_el_archivo(texto):
+        await message.answer("Perfecto, envíamelo por aquí 📸")
+        return
     # Si siguió hablando de otra cosa, la oferta caduca: un archivo que llegue después
     # no debe pegarse a ese hito sin preguntar.
     if data.get("pending_media_hito") is not None:
@@ -1308,13 +1336,18 @@ async def _pasar_media_a_hito(message: Message, ext, child, state: FSMContext) -
 
 
 async def _sugerir_media(message: Message, state: FSMContext, milestone_id: int) -> None:
-    """Tras guardar un hito por texto/voz, ofrece adjuntarle foto/video (por chat)."""
+    """Tras guardar un hito por texto/voz, pide su foto/video (por chat).
+
+    Es una instrucción y no una pregunta: si se pregunta «¿quieres añadir una foto?»,
+    la gente contesta «sí» y ese mensaje abría otra conversación."""
     await state.update_data(pending_media_hito=milestone_id)
+    hito = await crud.get_milestone(milestone_id)
+    momento = f"«{hito.description}»" if hito else "este momento"
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="Ahora no", callback_data="skipmedia")]]
     )
     await message.answer(
-        "📸 ¿Quieres añadir una foto o video para recordar este momento?",
+        f"📸 Si tienes una foto o video de {momento}, envíamelo ahora y lo guardo con ese momento.",
         reply_markup=kb,
     )
 
